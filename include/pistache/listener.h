@@ -62,7 +62,6 @@ public:
     Async::Promise<Load> requestLoad(const Load& old);
 
     Options options() const;
-    Address address() const;
 
     void pinWorker(size_t worker, const CpuSet& set);
 

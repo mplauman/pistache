@@ -292,11 +292,6 @@ Listener::requestLoad(const Listener::Load& old) {
      }, Async::Throw);
 }
 
-Address
-Listener::address() const {
-    return addr_;
-}
-
 Options
 Listener::options() const {
     return options_;
