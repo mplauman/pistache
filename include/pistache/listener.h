@@ -43,6 +43,7 @@ public:
     ~Listener();
 
     Listener(const Address& address);
+    Listener(BoundSocketFactory factory);
     void init(
             size_t workers,
             Flags<Options> options = Options::None,
@@ -51,6 +52,7 @@ public:
 
     bool bind();
     bool bind(const Address& adress);
+    bool bind(BoundSocketFactory factory);
 
     bool isBound() const;
 
@@ -66,7 +68,7 @@ public:
     void pinWorker(size_t worker, const CpuSet& set);
 
 private: 
-    Address addr_; 
+    BoundSocketFactory socketFactory_;
     int listen_fd;
     int backlog_;
     NotifyFd shutdownFd;

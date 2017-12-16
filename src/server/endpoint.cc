@@ -41,6 +41,10 @@ Endpoint::Endpoint(const Address& addr)
     : listener(addr)
 { }
 
+Endpoint::Endpoint(Tcp::BoundSocketFactory factory)
+    : listener(factory)
+{ }
+
 void
 Endpoint::init(const Endpoint::Options& options) {
     listener.init(options.threads_, options.flags_);
@@ -59,6 +63,11 @@ Endpoint::bind() {
 void
 Endpoint::bind(const Address& addr) {
     listener.bind(addr);
+}
+
+void
+Endpoint::bind(Tcp::BoundSocketFactory factory) {
+    listener.bind(factory);
 }
 
 void

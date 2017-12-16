@@ -43,6 +43,47 @@ namespace {
     void handle_sigint(int) {
         closeListener();
     }
+
+    int bindInetAddress(const Address& addr, const Flags<Options>& options) {
+        struct addrinfo hints;
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_flags = AI_PASSIVE;
+        hints.ai_protocol = 0;
+
+        auto host = addr.host();
+        if (host == "*") {
+            host = "0.0.0.0";
+        }
+
+        /* We rely on the fact that a string literal is an lvalue const char[N] */
+        static constexpr size_t MaxPortLen = sizeof("65535");
+
+        char port[MaxPortLen];
+        std::fill(port, port + MaxPortLen, 0);
+        std::snprintf(port, MaxPortLen, "%d", static_cast<uint16_t>(addr.port()));
+
+        struct addrinfo *addrs;
+        TRY(::getaddrinfo(host.c_str(), port, &hints, &addrs));
+
+        int fd = -1;
+
+        for (struct addrinfo *addr = addrs; addr; addr = addr->ai_next) {
+            fd = ::socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
+            if (fd < 0) continue;
+
+            setSocketOptions(fd, options);
+
+            if (::bind(fd, addr->ai_addr, addr->ai_addrlen) < 0) {
+                close(fd);
+                continue;
+            }
+
+            break;
+        }
+
+        return fd;
+    }
 }
 
 using Polling::NotifyOn;
@@ -73,13 +114,16 @@ void setSocketOptions(Fd fd, Flags<Options> options) {
 }
 
 Listener::Listener()
-    : listen_fd(-1)
-    , backlog_(Const::MaxBacklog)
-    , reactor_(Aio::Reactor::create())
+    : Listener([](const Flags<Options> &options) -> int { return -1; })
 { }
 
 Listener::Listener(const Address& address)
-    : addr_(address)
+    : Listener([address](const Flags<Options> &options) -> int { return bindInetAddress(address, options); })
+{
+}
+
+Listener::Listener(BoundSocketFactory factory)
+    : socketFactory_(factory)
     , listen_fd(-1)
     , backlog_(Const::MaxBacklog)
     , reactor_(Aio::Reactor::create())
@@ -136,52 +180,22 @@ Listener::pinWorker(size_t worker, const CpuSet& set)
 
 bool
 Listener::bind() {
-    return bind(addr_);
+    return bind(socketFactory_);
 }
 
 bool
 Listener::bind(const Address& address) {
+    return bind([&address](const Flags<Options>& options) -> int { return bindInetAddress(address, options); });
+}
+
+bool
+Listener::bind(BoundSocketFactory socketFactory) {
     if (!handler_)
         throw std::runtime_error("Call setHandler before calling bind()");
-    addr_ = address;
 
-    struct addrinfo hints;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM; 
-    hints.ai_flags = AI_PASSIVE;
-    hints.ai_protocol = 0;
+    int fd = socketFactory(options_);
 
-    auto host = addr_.host();
-    if (host == "*") {
-        host = "0.0.0.0";
-    }
-
-    /* We rely on the fact that a string literal is an lvalue const char[N] */
-    static constexpr size_t MaxPortLen = sizeof("65535");
-
-    char port[MaxPortLen];
-    std::fill(port, port + MaxPortLen, 0);
-    std::snprintf(port, MaxPortLen, "%d", static_cast<uint16_t>(addr_.port()));
-
-    struct addrinfo *addrs;
-    TRY(::getaddrinfo(host.c_str(), port, &hints, &addrs));
-
-    int fd = -1;
-
-    for (struct addrinfo *addr = addrs; addr; addr = addr->ai_next) {
-        fd = ::socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
-        if (fd < 0) continue;
-
-        setSocketOptions(fd, options_);
-
-        if (::bind(fd, addr->ai_addr, addr->ai_addrlen) < 0) {
-            close(fd);
-            continue;
-        }
-
-        TRY(::listen(fd, backlog_));
-        break;
-    }
+    TRY(::listen(fd, backlog_));
 
     make_non_blocking(fd);
     poller.addFd(fd, Polling::NotifyOn::Read, Polling::Tag(fd));

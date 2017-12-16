@@ -30,6 +30,7 @@ public:
     };
     Endpoint();
     Endpoint(const Address& addr);
+    Endpoint(Tcp::BoundSocketFactory socketFactory);
 
     template<typename... Args>
     void initArgs(Args&& ...args) {
@@ -41,6 +42,7 @@ public:
 
     void bind();
     void bind(const Address& addr);
+    void bind(Tcp::BoundSocketFactory factory);
 
     void serve();
     void serveThreaded();

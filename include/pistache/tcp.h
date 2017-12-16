@@ -31,6 +31,8 @@ enum class Options : uint64_t {
 
 DECLARE_FLAGS_OPERATORS(Options)
 
+typedef std::function<int(const Options&)> BoundSocketFactory;
+
 class Handler : private Prototype<Handler> {
 public:
     friend class Transport;
