@@ -26,6 +26,9 @@ class Transport;
 
 std::pair<StringView, StringView> splitUrl(const std::string& url);
 
+typedef std::function<int(const Address &address)> ClientSocketFactory;
+typedef std::function<int(int fd)> ClientSocketConnector;
+
 struct Connection : public std::enable_shared_from_this<Connection> {
 
     friend class ConnectionPool;
@@ -74,6 +77,7 @@ struct Connection : public std::enable_shared_from_this<Connection> {
     };
 
     void connect(Address addr);
+    void connect(const Address& addr, ClientSocketFactory socketFactory, ClientSocketConnector connector);
     void close();
     bool isIdle() const;
     bool isConnected() const;
@@ -171,7 +175,7 @@ public:
     void registerPoller(Polling::Epoll& poller);
 
     Async::Promise<void>
-    asyncConnect(const std::shared_ptr<Connection>& connection, const struct sockaddr* address, socklen_t addr_len);
+    asyncConnect(const std::shared_ptr<Connection>& connection, ClientSocketConnector connect);
 
     Async::Promise<ssize_t> asyncSendRequest(
             const std::shared_ptr<Connection>& connection,
@@ -188,19 +192,17 @@ private:
     struct ConnectionEntry {
         ConnectionEntry(
                 Async::Resolver resolve, Async::Rejection reject,
-                std::shared_ptr<Connection> connection, const struct sockaddr* addr, socklen_t addr_len)
+                std::shared_ptr<Connection> connection, ClientSocketConnector connect)
             : resolve(std::move(resolve))
             , reject(std::move(reject))
             , connection(std::move(connection))
-            , addr(addr)
-            , addr_len(addr_len)
+            , connect(connect)
         { }
 
         Async::Resolver resolve;
         Async::Rejection reject;
         std::shared_ptr<Connection> connection;
-        const struct sockaddr* addr;
-        socklen_t addr_len;
+        ClientSocketConnector connect;
     };
 
     struct RequestEntry {
