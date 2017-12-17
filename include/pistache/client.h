@@ -26,8 +26,32 @@ class Transport;
 
 std::pair<StringView, StringView> splitUrl(const std::string& url);
 
-typedef std::function<int(const Address &address)> ClientSocketFactory;
-typedef std::function<int(int fd)> ClientSocketConnector;
+class ClientSocket {
+public:
+    virtual ~ClientSocket() {
+        ::close(fd);
+    }
+
+    virtual int connect() = 0;
+
+    explicit operator int() {
+        return fd;
+    }
+
+protected:
+    ClientSocket(int fd)
+        : fd(fd)
+    {
+        if (fd < 0) {
+            throw std::runtime_error("Failed to connect");
+        }
+    }
+
+private:
+    int fd;
+};
+
+typedef std::function<ClientSocket* (const Address &address)> ClientSocketFactory;
 
 struct Connection : public std::enable_shared_from_this<Connection> {
 
@@ -36,7 +60,7 @@ struct Connection : public std::enable_shared_from_this<Connection> {
     typedef std::function<void()> OnDone;
 
     Connection()
-        : fd(-1)
+        : socket(nullptr)
         , connectionState_(NotConnected)
         , inflightCount(0)
         , responsesReceived(0)
@@ -77,7 +101,7 @@ struct Connection : public std::enable_shared_from_this<Connection> {
     };
 
     void connect(Address addr);
-    void connect(const Address& addr, ClientSocketFactory socketFactory, ClientSocketConnector connector);
+    void connect(const Address& addr, ClientSocketFactory socketFactory);
     void close();
     bool isIdle() const;
     bool isConnected() const;
@@ -96,7 +120,7 @@ struct Connection : public std::enable_shared_from_this<Connection> {
             Async::Rejection reject,
             OnDone onDone);
 
-    Fd fd;
+    std::shared_ptr<ClientSocket> socket;
 
     void handleResponsePacket(const char* buffer, size_t totalBytes);
     void handleError(const char* error);
@@ -175,7 +199,7 @@ public:
     void registerPoller(Polling::Epoll& poller);
 
     Async::Promise<void>
-    asyncConnect(const std::shared_ptr<Connection>& connection, ClientSocketConnector connect);
+    asyncConnect(const std::shared_ptr<Connection>& connection);
 
     Async::Promise<ssize_t> asyncSendRequest(
             const std::shared_ptr<Connection>& connection,
@@ -192,17 +216,15 @@ private:
     struct ConnectionEntry {
         ConnectionEntry(
                 Async::Resolver resolve, Async::Rejection reject,
-                std::shared_ptr<Connection> connection, ClientSocketConnector connect)
+                std::shared_ptr<Connection> connection)
             : resolve(std::move(resolve))
             , reject(std::move(reject))
             , connection(std::move(connection))
-            , connect(connect)
         { }
 
         Async::Resolver resolve;
         Async::Rejection reject;
         std::shared_ptr<Connection> connection;
-        ClientSocketConnector connect;
     };
 
     struct RequestEntry {

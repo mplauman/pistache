@@ -191,7 +191,7 @@ Transport::onReady(const Aio::FdSet& fds) {
                 else {
                     conn.resolve();
                     // We are connected, we can start reading data now
-                    reactor()->modifyFd(key(), conn.connection->fd, NotifyOn::Read);
+                    reactor()->modifyFd(key(), static_cast<int>(*conn.connection->socket), NotifyOn::Read);
                 }
             } else {
                 throw std::runtime_error("Unknown fd");
@@ -207,10 +207,10 @@ Transport::registerPoller(Polling::Epoll& poller) {
 }
 
 Async::Promise<void>
-Transport::asyncConnect(const std::shared_ptr<Connection>& connection, ClientSocketConnector connect)
+Transport::asyncConnect(const std::shared_ptr<Connection>& connection)
 {
     return Async::Promise<void>([=](Async::Resolver& resolve, Async::Rejection& reject) {
-        ConnectionEntry entry(std::move(resolve), std::move(reject), connection, connect);
+        ConnectionEntry entry(std::move(resolve), std::move(reject), connection);
         auto *e = connectionsQueue.allocEntry(std::move(entry));
         connectionsQueue.push(e);
     });
@@ -249,7 +249,7 @@ Transport::asyncSendRequestImpl(
 
     auto conn = req.connection;
 
-    auto fd = conn->fd;
+    auto fd = static_cast<int>(*conn->socket);
 
     ssize_t totalWritten = 0;
     for (;;) {
@@ -307,17 +307,18 @@ Transport::handleConnectionQueue() {
 
         auto &data = entry->data();
         const auto& conn = data.connection;
-        int res = data.connect(conn->fd);
+        Fd fd = static_cast<int>(*conn->socket);
+        int res = conn->socket->connect();
         if (res == -1) {
             if (errno == EINPROGRESS) {
-                reactor()->registerFdOneShot(key(), conn->fd, NotifyOn::Write | NotifyOn::Hangup | NotifyOn::Shutdown);
+                reactor()->registerFdOneShot(key(), fd, NotifyOn::Write | NotifyOn::Hangup | NotifyOn::Shutdown);
             }
             else {
                 data.reject(Error::system("Failed to connect"));
                 continue;
             }
         }
-        connections.insert(std::make_pair(conn->fd, std::move(data)));
+        connections.insert(std::make_pair(fd, std::move(data)));
     }
 }
 
@@ -331,7 +332,7 @@ Transport::handleIncoming(const std::shared_ptr<Connection>& connection) {
 
         ssize_t bytes;
 
-        bytes = recv(connection->fd, buffer + totalBytes, Const::MaxBuffer - totalBytes, 0);
+        bytes = recv(static_cast<int>(*connection->socket), buffer + totalBytes, Const::MaxBuffer - totalBytes, 0);
         if (bytes == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 if (totalBytes > 0) {
@@ -348,7 +349,7 @@ Transport::handleIncoming(const std::shared_ptr<Connection>& connection) {
             } else {
                 connection->handleError("Remote closed connection");
             }
-            connections.erase(connection->fd);
+            connections.erase(static_cast<int>(*connection->socket));
             connection->close();
             break;
         }
@@ -373,17 +374,27 @@ Transport::handleTimeout(const std::shared_ptr<Connection>& connection) {
     connection->handleTimeout();
 }
 
-struct SharedInetInfo {
-    struct sockaddr *addr;
-    size_t addrlen;
+class InetSocket : public ClientSocket
+{
+public:
+    InetSocket(int fd, const struct sockaddr* addr, size_t addrlen)
+        : ClientSocket(fd)
+        , bytes(reinterpret_cast<const char *>(addr), reinterpret_cast<const char*>(addr) + addrlen)
+    {
+    }
+
+    int connect() override {
+        return ::connect(static_cast<int>(*this), reinterpret_cast<const struct sockaddr *>(bytes.data()), bytes.size());
+    }
+
+private:
+    std::vector<char> bytes;
 };
 
 void
 Connection::connect(Address addr)
 {
-    std::shared_ptr<SharedInetInfo> sharedInfo(new SharedInetInfo());
-
-    ClientSocketFactory inetSocketFactory = [sharedInfo](const Address& addr) -> int {
+    ClientSocketFactory inetSocketFactory = [](const Address& addr) -> ClientSocket * {
         struct addrinfo hints;
         memset(&hints, 0, sizeof(struct addrinfo));
         hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
@@ -403,43 +414,35 @@ Connection::connect(Address addr)
         struct addrinfo *addrs;
         TRY(::getaddrinfo(host.c_str(), port, &hints, &addrs));
 
-        int sfd = -1;
-
         for (struct addrinfo *addr = addrs; addr; addr = addr->ai_next) {
-            sfd = ::socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
+            int sfd = ::socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
             if (sfd < 0) continue;
 
-            sharedInfo->addr = addr->ai_addr;
-            sharedInfo->addrlen = addr->ai_addrlen;
-            break;
+            return new InetSocket(sfd, addr->ai_addr, addr->ai_addrlen);
         }
 
-        return sfd;
+        throw std::runtime_error("Could not find a connectable address");
     };
 
-    ClientSocketConnector inetConnector = [sharedInfo](int fd) -> int {
-        return ::connect(fd, sharedInfo->addr, sharedInfo->addrlen);
-    };
-
-    connect(addr, inetSocketFactory, inetConnector);
+    connect(addr, inetSocketFactory);
 }
 
 void
-Connection::connect(const Address& addr, ClientSocketFactory socketFactory, ClientSocketConnector socketConnector)
+Connection::connect(const Address& addr, ClientSocketFactory socketFactory)
 {
-    int sfd = socketFactory(addr);
-    if (sfd < 0)
+    std::unique_ptr<ClientSocket> sfd(socketFactory(addr));
+    if (!sfd)
         throw std::runtime_error("Failed to connect");
 
-    make_non_blocking(sfd);
+    make_non_blocking(static_cast<int>(*sfd));
 
     connectionState_ = Connecting;
-    fd = sfd;
+    socket = std::move(sfd);
 
-    transport_->asyncConnect(shared_from_this(), socketConnector)
-        .then([=]() {
+    transport_->asyncConnect(shared_from_this())
+        .then([this]() {
             socklen_t len = sizeof(saddr);
-            getsockname(sfd, (struct sockaddr *)&saddr, &len);
+            getsockname(static_cast<int>(*socket), (struct sockaddr *)&saddr, &len);
             connectionState_ = Connected;
             processRequestQueue();
         }, ExceptionPrinter());
@@ -448,7 +451,7 @@ Connection::connect(const Address& addr, ClientSocketFactory socketFactory, Clie
 std::string
 Connection::dump() const {
     std::ostringstream oss;
-    oss << "Connection(fd = " << fd << ", src_port = ";
+    oss << "Connection(fd = " << static_cast<int>(*socket) << ", src_port = ";
     oss << ntohs(saddr.sin_port) << ")";
     return oss.str();
 }
@@ -466,7 +469,7 @@ Connection::isConnected() const {
 void
 Connection::close() {
     connectionState_ = NotConnected;
-    ::close(fd);
+    socket.reset();
 }
 
 void
