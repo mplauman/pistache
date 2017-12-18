@@ -387,14 +387,8 @@ public:
         return ::connect(static_cast<int>(*this), reinterpret_cast<const struct sockaddr *>(bytes.data()), bytes.size());
     }
 
-private:
-    std::vector<char> bytes;
-};
-
-void
-Connection::connect(Address addr)
-{
-    ClientSocketFactory inetSocketFactory = [](const Address& addr) -> ClientSocket * {
+    static InetSocket *create(const Address& addr)
+    {
         struct addrinfo hints;
         memset(&hints, 0, sizeof(struct addrinfo));
         hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
@@ -422,13 +416,24 @@ Connection::connect(Address addr)
         }
 
         throw std::runtime_error("Could not find a connectable address");
-    };
+    }
 
-    connect(addr, inetSocketFactory);
+private:
+    std::vector<char> bytes;
+};
+
+Connection::Connection(ClientSocketFactory socketFactory)
+    : socketFactory(socketFactory)
+    , socket(nullptr)
+    , connectionState_(NotConnected)
+    , inflightCount(0)
+    , responsesReceived(0)
+{
+    state_.store(static_cast<uint32_t>(State::Idle));
 }
 
 void
-Connection::connect(const Address& addr, ClientSocketFactory socketFactory)
+Connection::connect(Address addr)
 {
     std::unique_ptr<ClientSocket> sfd(socketFactory(addr));
     if (!sfd)
@@ -633,6 +638,11 @@ Connection::processRequestQueue() {
 
 }
 
+ConnectionPool::ConnectionPool(ClientSocketFactory socketFactory)
+    : socketFactory(socketFactory)
+{
+}
+
 void
 ConnectionPool::init(size_t maxConnsPerHost) {
     maxConnectionsPerHost = maxConnsPerHost;
@@ -648,7 +658,7 @@ ConnectionPool::pickConnection(const std::string& domain) {
         if (poolIt == std::end(conns)) {
             Connections connections;
             for (size_t i = 0; i < maxConnectionsPerHost; ++i) {
-                connections.push_back(std::make_shared<Connection>());
+                connections.push_back(std::make_shared<Connection>(socketFactory));
             }
 
             poolIt = conns.insert(std::make_pair(domain, std::move(connections))).first;
@@ -777,8 +787,14 @@ Client::Options::maxConnectionsPerHost(int val) {
 }
 
 Client::Client()
+    : Client(InetSocket::create)
+{
+}
+
+Client::Client(ClientSocketFactory socketFactory)
     : reactor_(Aio::Reactor::create())
     , ioIndex(0)
+    , pool(socketFactory)
 {
 }
 

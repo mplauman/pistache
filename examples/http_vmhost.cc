@@ -1,8 +1,8 @@
 /*
-   Matthew Plaumann, 16 December 2017
-
-   Example of a VMWare ESXi server listening for guest VM connections.
-*/
+ * Matthew Plaumann, 16 December 2017
+ *
+ * Example of a VMWare ESXi server listening for guest VM connections.
+ */
 
 #include <pistache/endpoint.h>
 
@@ -22,15 +22,20 @@ public:
     }
 };
 
-int main() {
+int main(int argc, char * argv[]) {
     auto opts = Http::Endpoint::options()
         .threads(1);
 
-    Http::Endpoint server([](const Flags<Tcp::Options> &) -> int {
+    std::string port("8080");
+    if (argc > 1) {
+        port = argv[1];
+    }
+
+    Http::Endpoint server([port](const Flags<Tcp::Options> &) -> int {
         struct sockaddr_vm addr = {};
         addr.svm_family = ::VMCISock_GetAFValue();
         addr.svm_cid = VMADDR_CID_ANY;
-        addr.svm_port = 9080;
+        addr.svm_port = std::stoi(port);
 
         int fd = ::socket(addr.svm_family, SOCK_STREAM, 0);
 

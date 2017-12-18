@@ -59,14 +59,7 @@ struct Connection : public std::enable_shared_from_this<Connection> {
 
     typedef std::function<void()> OnDone;
 
-    Connection()
-        : socket(nullptr)
-        , connectionState_(NotConnected)
-        , inflightCount(0)
-        , responsesReceived(0)
-    {
-        state_.store(static_cast<uint32_t>(State::Idle));
-    }
+    Connection(ClientSocketFactory socketFactory);
 
     struct RequestData {
 
@@ -101,7 +94,6 @@ struct Connection : public std::enable_shared_from_this<Connection> {
     };
 
     void connect(Address addr);
-    void connect(const Address& addr, ClientSocketFactory socketFactory);
     void close();
     bool isIdle() const;
     bool isConnected() const;
@@ -120,6 +112,7 @@ struct Connection : public std::enable_shared_from_this<Connection> {
             Async::Rejection reject,
             OnDone onDone);
 
+    ClientSocketFactory socketFactory;
     std::shared_ptr<ClientSocket> socket;
 
     void handleResponsePacket(const char* buffer, size_t totalBytes);
@@ -165,6 +158,7 @@ private:
 };
 
 struct ConnectionPool {
+    ConnectionPool(ClientSocketFactory socketFactory);
 
     void init(size_t maxConnsPerHost);
 
@@ -186,6 +180,7 @@ private:
     mutable Lock connsLock;
     std::unordered_map<std::string, Connections> conns;
     size_t maxConnectionsPerHost;
+    ClientSocketFactory socketFactory;
 };
 
 class Transport : public Aio::Handler {
@@ -340,6 +335,7 @@ public:
    };
 
    Client();
+   Client(ClientSocketFactory socketFactory);
    ~Client();
 
    static Options options();
